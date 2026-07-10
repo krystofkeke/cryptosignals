@@ -3,11 +3,14 @@
 const fs = require('fs');
 
 // ===== NASTAVENÍ =====
-const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT',
-  'ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT','NEARUSDT','ARBUSDT'];
-const MIN_WIN = 66;               // posílat jen signály s úspěšností >= 66 %
-const COOLDOWN_MS = 3*60*60*1000; // stejný signál znovu až po 3 h
-const HOURLY_TIP = true;          // když nic silného, jednou za hodinu pošli nejlepší nápad
+const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BANANAUSDT','LTCUSDT','HMSTRUSDT','AAVEUSDT',
+  'APEUSDT','ARBUSDT','XRPUSDT','PUMPUSDT','DOGEUSDT','DYDXUSDT','ZECUSDT','LITUSDT','SUIUSDT',
+  'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','HYPEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT',
+  'ADAUSDT','WLDUSDT','TIAUSDT','VVVUSDT','MONUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT',
+  'CELOUSDT','MANTAUSDT','GASUSDT','FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
+const MIN_WIN = 66;                 // silný signál hned = úspěšnost >= 66 %
+const COOLDOWN_MS = 3*60*60*1000;   // stejný silný signál znovu až po 3 h
+const OVERVIEW_EVERY_MS = 60*60*1000; // přehled VŠECH coinů každou hodinu
 const STATE_FILE = 'state.json';
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
@@ -72,7 +75,8 @@ function analyze(K){
 }
 
 async function klines(sym){
-  const r=await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1h&limit=250`);
+  // Binance FUTURES (perp) data – to co obchoduješ
+  const r=await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1h&limit=250`);
   const d=await r.json(); if(!Array.isArray(d))throw new Error('data');
   return {c:d.map(x=>+x[4]),h:d.map(x=>+x[2]),l:d.map(x=>+x[3]),v:d.map(x=>+x[5])};
 }
@@ -88,7 +92,9 @@ async function tg(text){
   const now=Date.now(); let sent=0; const analyzed=[];
   for(const sym of COINS){
     try{
-      const a=analyze(await klines(sym)); const tick=sym.replace('USDT','');
+      const K=await klines(sym);
+      if(K.c.length<60){console.error(sym,'málo dat');continue;}
+      const a=analyze(K); const tick=sym.replace('USDT','');
       analyzed.push({sym,tick,a});
       if(a.winPct<MIN_WIN)continue;
       const prev=state[sym], changed=!prev||prev.dir!==a.dir, cooled=!prev||(now-prev.ts)>COOLDOWN_MS;
@@ -100,15 +106,15 @@ async function tg(text){
       }
     }catch(e){console.error(sym,e.message)}
   }
-  // hodinový tip – když se nic silného nestalo přes hodinu, pošli nejlepší nápad
-  if(HOURLY_TIP && sent===0 && analyzed.length){
-    const lastTip = state.__tip||0;
-    if(now-lastTip>60*60*1000){
-      analyzed.sort((x,y)=>y.a.winPct-x.a.winPct);
-      const b=analyzed[0], ar=b.a.dir==='LONG'?'▲':'▼';
-      state.__tip=now;
-      await tg(`⏰ Hodinový tip — ${b.tick}: dej na ${b.a.dir} ${ar} na ~${fmtTime(b.a.hours)}\nNejlepší teď · šance ${b.a.winPct}% · cena $${fmt(b.a.price)} · 🛑 stop $${fmt(b.a.stop)}`);
-    }
+  // 📊 hodinový PŘEHLED všech coinů (ať vidíš všechny, ne jen jeden)
+  if(analyzed.length && now-(state.__overview||0)>OVERVIEW_EVERY_MS){
+    state.__overview=now;
+    analyzed.sort((x,y)=>y.a.winPct-x.a.winPct);
+    const lines=analyzed.map(x=>{
+      const ar=x.a.dir==='LONG'?'▲ LONG':'▼ SHORT';
+      return `${x.tick}: ${ar} ${x.a.winPct}% · ~${fmtTime(x.a.hours)}`;
+    });
+    await tg('📊 Přehled signálů (všechny coiny):\n'+lines.join('\n'));
   }
   fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   console.log('Hotovo. Odesláno signálů:', sent);
