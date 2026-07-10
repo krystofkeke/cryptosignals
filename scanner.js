@@ -8,7 +8,7 @@ const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BANANAUSDT','LTCUSDT','HMSTRUSDT',
   'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','HYPEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT',
   'ADAUSDT','WLDUSDT','TIAUSDT','VVVUSDT','MONUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT',
   'CELOUSDT','MANTAUSDT','GASUSDT','FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
-const MIN_WIN = 66;                 // posílat JEN dobré signály – úspěšnost >= 66 %
+const MIN_WIN = 58;                 // posílat slušné signály – úspěšnost >= 58 % (realistické)
 const COOLDOWN_MS = 3*60*60*1000;   // stejný signál znovu až po 3 h (ať to nespamuje)
 const STATE_FILE = 'state.json';
 
@@ -104,15 +104,13 @@ async function tg(text){
       const a=analyze(K,nudge); const tick=sym.replace('USDT','');
       analyzed.push({sym,tick,a});
       if(a.winPct<MIN_WIN)continue;
-      // posílat jen když se souhlasí s vyšším trendem (bezpečnější) – TOP kvalita
-      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0);
-      if(!aligned)continue;
+      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0); // jen info, ne filtr
       const prev=state[sym], changed=!prev||prev.dir!==a.dir, cooled=!prev||(now-prev.ts)>COOLDOWN_MS;
       if(changed||cooled){
         state[sym]={dir:a.dir,ts:now};
         const ar=a.dir==='LONG'?'▲':'▼';
         const frTxt=Math.abs(fr)>0.0006?` · funding ${(fr*100).toFixed(3)}%${fr>0?' (moc longů)':' (moc shortů)'}`:'';
-        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}% (v trendu) · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}${frTxt}`);
+        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}%${aligned?' (v trendu)':''} · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}${frTxt}`);
         sent++;
       }
     }catch(e){console.error(sym,e.message)}
