@@ -5,9 +5,9 @@ const fs = require('fs');
 // ===== NASTAVENÍ =====
 const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BANANAUSDT','LTCUSDT','HMSTRUSDT','AAVEUSDT',
   'APEUSDT','ARBUSDT','XRPUSDT','PUMPUSDT','DOGEUSDT','DYDXUSDT','ZECUSDT','LITUSDT','SUIUSDT',
-  'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','HYPEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT',
-  'ADAUSDT','WLDUSDT','TIAUSDT','VVVUSDT','MONUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT',
-  'CELOUSDT','MANTAUSDT','GASUSDT','FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
+  'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT','ADAUSDT',
+  'WLDUSDT','TIAUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT','CELOUSDT','MANTAUSDT','GASUSDT',
+  'FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
 const MIN_WIN = 58;                 // posílat slušné signály – úspěšnost >= 58 % (realistické)
 const COOLDOWN_MS = 3*60*60*1000;   // stejný signál znovu až po 3 h (ať to nespamuje)
 const STATE_FILE = 'state.json';
@@ -76,14 +76,10 @@ function analyze(K,nudge){
 }
 
 async function klines(sym){
-  // Binance FUTURES (perp) data – to co obchoduješ
-  const r=await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1h&limit=250`);
+  // Binance SPOT přes veřejný server (funguje i z GitHub US serverů; futures/fapi je z USA blokované)
+  const r=await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1h&limit=250`);
   const d=await r.json(); if(!Array.isArray(d))throw new Error('data');
   return {c:d.map(x=>+x[4]),h:d.map(x=>+x[2]),l:d.map(x=>+x[3]),v:d.map(x=>+x[5])};
-}
-async function funding(sym){
-  try{ const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);
-    const d=await r.json(); return +d.lastFundingRate||0; }catch(e){ return 0; }
 }
 async function tg(text){
   const r=await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`,{method:'POST',
@@ -99,18 +95,15 @@ async function tg(text){
     try{
       const K=await klines(sym);
       if(K.c.length<60){console.error(sym,'málo dat');continue;}
-      const fr=await funding(sym);
-      let nudge=0; if(fr>0.0006)nudge=-0.8; else if(fr<-0.0006)nudge=0.8; // extrémní funding = contrarian
-      const a=analyze(K,nudge); const tick=sym.replace('USDT','');
+      const a=analyze(K); const tick=sym.replace('USDT','');
       analyzed.push({sym,tick,a});
       if(a.winPct<MIN_WIN)continue;
-      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0); // jen info, ne filtr
+      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0);
       const prev=state[sym], changed=!prev||prev.dir!==a.dir, cooled=!prev||(now-prev.ts)>COOLDOWN_MS;
       if(changed||cooled){
         state[sym]={dir:a.dir,ts:now};
         const ar=a.dir==='LONG'?'▲':'▼';
-        const frTxt=Math.abs(fr)>0.0006?` · funding ${(fr*100).toFixed(3)}%${fr>0?' (moc longů)':' (moc shortů)'}`:'';
-        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}%${aligned?' (v trendu)':''} · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}${frTxt}`);
+        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}%${aligned?' (v trendu)':''} · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}`);
         sent++;
       }
     }catch(e){console.error(sym,e.message)}
