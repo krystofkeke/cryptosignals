@@ -8,9 +8,8 @@ const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BANANAUSDT','LTCUSDT','HMSTRUSDT',
   'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','HYPEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT',
   'ADAUSDT','WLDUSDT','TIAUSDT','VVVUSDT','MONUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT',
   'CELOUSDT','MANTAUSDT','GASUSDT','FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
-const MIN_WIN = 66;                 // silný signál hned = úspěšnost >= 66 %
-const COOLDOWN_MS = 3*60*60*1000;   // stejný silný signál znovu až po 3 h
-const OVERVIEW_EVERY_MS = 60*60*1000; // přehled VŠECH coinů každou hodinu
+const MIN_WIN = 66;                 // posílat JEN dobré signály – úspěšnost >= 66 %
+const COOLDOWN_MS = 3*60*60*1000;   // stejný signál znovu až po 3 h (ať to nespamuje)
 const STATE_FILE = 'state.json';
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
@@ -27,7 +26,8 @@ function avg(a){return a.reduce((s,x)=>s+x,0)/a.length}
 function fmt(n){if(n>=1000)return n.toLocaleString('en-US',{maximumFractionDigits:0});if(n>=1)return n.toFixed(2);return n.toPrecision(4)}
 function fmtTime(h){if(h<1)return Math.round(h*60)+' min';if(h<48)return h.toFixed(1)+' h';return (h/24).toFixed(1)+' dní'}
 
-function analyze(K){
+function analyze(K,nudge){
+  nudge=nudge||0;
   const{c,h,l,v}=K,i=c.length-1,price=c[i];
   const e20=ema(c,20),e50=ema(c,50),e200=ema(c,200),R=rsi(c),M=macd(c),A=atr(h,l,c);
   const rN=R[i],mH=M.hist[i],mHp=M.hist[i-1],aN=A[i];
@@ -46,6 +46,7 @@ function analyze(K){
   s+=e20[i]>e50[i]?1:-1; s+=price>e200[i]?1:-1; s+=htf*1.5; s+=mH>0?1:-1; s+=mH>mHp?0.5:-0.5;
   s+=rN>70?-1:rN<30?1:(rN>55?0.5:rN<45?-0.5:0);
   if(price>=bbUp)s-=0.5; if(price<=bbLo)s+=0.5;
+  s+=nudge; // funding rate (perp): extrémní funding = přeplněný trade → contrarian
   if(bearDiv)s-=1.5; else if(bullDiv)s+=1.5;
   else if(vel3<-0.05&&rN<38&&volSpike>1.6)s+=1.5;
   else if(vel3>0.05&&rN>66&&volSpike>1.6)s-=1.5;
@@ -80,6 +81,10 @@ async function klines(sym){
   const d=await r.json(); if(!Array.isArray(d))throw new Error('data');
   return {c:d.map(x=>+x[4]),h:d.map(x=>+x[2]),l:d.map(x=>+x[3]),v:d.map(x=>+x[5])};
 }
+async function funding(sym){
+  try{ const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);
+    const d=await r.json(); return +d.lastFundingRate||0; }catch(e){ return 0; }
+}
 async function tg(text){
   const r=await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`,{method:'POST',
     headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:CHAT,text})});
@@ -94,27 +99,23 @@ async function tg(text){
     try{
       const K=await klines(sym);
       if(K.c.length<60){console.error(sym,'málo dat');continue;}
-      const a=analyze(K); const tick=sym.replace('USDT','');
+      const fr=await funding(sym);
+      let nudge=0; if(fr>0.0006)nudge=-0.8; else if(fr<-0.0006)nudge=0.8; // extrémní funding = contrarian
+      const a=analyze(K,nudge); const tick=sym.replace('USDT','');
       analyzed.push({sym,tick,a});
       if(a.winPct<MIN_WIN)continue;
+      // posílat jen když se souhlasí s vyšším trendem (bezpečnější) – TOP kvalita
+      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0);
+      if(!aligned)continue;
       const prev=state[sym], changed=!prev||prev.dir!==a.dir, cooled=!prev||(now-prev.ts)>COOLDOWN_MS;
       if(changed||cooled){
         state[sym]={dir:a.dir,ts:now};
         const ar=a.dir==='LONG'?'▲':'▼';
-        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}% · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}`);
+        const frTxt=Math.abs(fr)>0.0006?` · funding ${(fr*100).toFixed(3)}%${fr>0?' (moc longů)':' (moc shortů)'}`:'';
+        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}% (v trendu) · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}${frTxt}`);
         sent++;
       }
     }catch(e){console.error(sym,e.message)}
-  }
-  // 📊 hodinový PŘEHLED všech coinů (ať vidíš všechny, ne jen jeden)
-  if(analyzed.length && now-(state.__overview||0)>OVERVIEW_EVERY_MS){
-    state.__overview=now;
-    analyzed.sort((x,y)=>y.a.winPct-x.a.winPct);
-    const lines=analyzed.map(x=>{
-      const ar=x.a.dir==='LONG'?'▲ LONG':'▼ SHORT';
-      return `${x.tick}: ${ar} ${x.a.winPct}% · ~${fmtTime(x.a.hours)}`;
-    });
-    await tg('📊 Přehled signálů (všechny coiny):\n'+lines.join('\n'));
   }
   fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   console.log('Hotovo. Odesláno signálů:', sent);
