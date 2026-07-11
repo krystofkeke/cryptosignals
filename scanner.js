@@ -8,8 +8,9 @@ const COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','BANANAUSDT','LTCUSDT','HMSTRUSDT',
   'LDOUSDT','PAXGUSDT','NEARUSDT','PENDLEUSDT','JUPUSDT','BNBUSDT','GRAMUSDT','UNIUSDT','ADAUSDT',
   'WLDUSDT','TIAUSDT','SKYUSDT','KAITOUSDT','BLURUSDT','TNSRUSDT','CELOUSDT','MANTAUSDT','GASUSDT',
   'FOGOUSDT','WLFIUSDT','MORPHOUSDT'];
-const MIN_WIN = 58;                 // posílat slušné signály – úspěšnost >= 58 % (realistické)
-const COOLDOWN_MS = 3*60*60*1000;   // stejný signál znovu až po 3 h (ať to nespamuje)
+const MIN_WIN = 55;                 // do TOP seznamu jen slušné (úspěšnost >= 55 %)
+const TOP_N = 10;                   // kolik nejlepších coinů poslat
+const SEND_EVERY_MS = 20*60*1000;   // TOP seznam každých ~20 minut
 const STATE_FILE = 'state.json';
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
@@ -97,16 +98,21 @@ async function tg(text){
       if(K.c.length<60){console.error(sym,'málo dat');continue;}
       const a=analyze(K); const tick=sym.replace('USDT','');
       analyzed.push({sym,tick,a});
-      if(a.winPct<MIN_WIN)continue;
-      const aligned=(a.dir==='LONG'&&a.htf>0)||(a.dir==='SHORT'&&a.htf<0);
-      const prev=state[sym], changed=!prev||prev.dir!==a.dir, cooled=!prev||(now-prev.ts)>COOLDOWN_MS;
-      if(changed||cooled){
-        state[sym]={dir:a.dir,ts:now};
-        const ar=a.dir==='LONG'?'▲':'▼';
-        await tg(`${tick}: dej na ${a.dir} ${ar} na ~${fmtTime(a.hours)}\nŠance ${a.winPct}%${aligned?' (v trendu)':''} · cena $${fmt(a.price)} · 🛑 stop $${fmt(a.stop)}`);
-        sent++;
-      }
     }catch(e){console.error(sym,e.message)}
+  }
+  // 🎯 pošli TOP nejlepších coinů (seřazené podle %) každých ~20 min – jedna přehledná zpráva
+  if(analyzed.length && now-(state.__last||0)>SEND_EVERY_MS){
+    state.__last=now;
+    const top=analyzed.filter(x=>x.a.winPct>=MIN_WIN).sort((a,b)=>b.a.winPct-a.a.winPct).slice(0,TOP_N);
+    if(top.length){
+      const lines=top.map(x=>{
+        const ar=x.a.dir==='LONG'?'▲ LONG':'▼ SHORT';
+        const al=(x.a.dir==='LONG'&&x.a.htf>0)||(x.a.dir==='SHORT'&&x.a.htf<0)?' (v trendu)':'';
+        return `${x.tick}: ${ar} ${x.a.winPct}%${al} · ~${fmtTime(x.a.hours)} · $${fmt(x.a.price)}`;
+      });
+      await tg('🎯 TOP signály teď:\n'+lines.join('\n')+'\n\n⚠️ Odhad, ne jistota. Vždy stop-loss.');
+      sent=top.length;
+    }
   }
   fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   console.log('Hotovo. Odesláno signálů:', sent);
