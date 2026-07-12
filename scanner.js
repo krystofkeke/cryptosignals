@@ -103,7 +103,7 @@ async function tg(text){
   // 🎯 pošli TOP nejlepších coinů (seřazené podle %) každých ~20 min – jedna přehledná zpráva
   if(analyzed.length && now-(state.__last||0)>SEND_EVERY_MS){
     state.__last=now;
-    const top=analyzed.filter(x=>x.a.winPct>=MIN_WIN).sort((a,b)=>b.a.winPct-a.a.winPct).slice(0,TOP_N);
+    const top=analyzed.slice().sort((a,b)=>b.a.winPct-a.a.winPct).slice(0,TOP_N);
     if(top.length){
       const lines=top.map(x=>{
         const ar=x.a.dir==='LONG'?'▲ LONG':'▼ SHORT';
